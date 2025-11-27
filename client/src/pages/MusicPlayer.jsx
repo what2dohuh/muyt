@@ -95,7 +95,7 @@ export default function MusicPlayer() {
       setError("Search failed");
     }
 
-    setIsSearching(false);
+   setIsSearching(false);
   };
 
   // PLAY SONG DIRECTLY

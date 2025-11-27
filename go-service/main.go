@@ -31,7 +31,6 @@ var regularTransport = &http.Transport{
 	TLSHandshakeTimeout:   10 * time.Second,
 	ResponseHeaderTimeout: 30 * time.Second,
 }
-
 func main() {
 	http.HandleFunc("/health", healthCheck)
 	http.HandleFunc("/api/search", handleSearch)
