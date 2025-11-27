@@ -31,12 +31,41 @@ var regularTransport = &http.Transport{
 	TLSHandshakeTimeout:   10 * time.Second,
 	ResponseHeaderTimeout: 30 * time.Second,
 }
-func main() {
-	http.HandleFunc("/health", healthCheck)
-	http.HandleFunc("/api/search", handleSearch)
-	http.HandleFunc("/api/song/", handleSong)
-	http.HandleFunc("/api/stream/", handleStream) // Special handling for streaming
+func enableCORS(next http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
 
+        allowed := map[string]bool{
+            "http://localhost:5173": true,
+						"http://localhost:5174":true,
+            "http://127.0.0.1:5173": true,
+            "http://35.226.13.70": true, // your VM
+        }
+
+        origin := r.Header.Get("Origin")
+        if allowed[origin] {
+            w.Header().Set("Access-Control-Allow-Origin", origin)
+            w.Header().Set("Vary", "Origin")
+        }
+
+        w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+        w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+        if r.Method == http.MethodOptions {
+            w.WriteHeader(http.StatusOK)
+            return
+        }
+
+        next(w, r)
+    }
+}
+
+func main() {
+	http.HandleFunc("/api/search", enableCORS(handleSearch))
+http.HandleFunc("/api/song/", enableCORS(handleSong))
+http.HandleFunc("/api/stream/", enableCORS(handleStream))
+http.HandleFunc("/health", enableCORS(healthCheck))
+	// Special handling for streaming
 	log.Printf("Go API Gateway running on %s", serverPort)
 	log.Printf("Proxying to Python service at %s", pythonServiceURL)
 	log.Fatal(http.ListenAndServe(serverPort, nil))
