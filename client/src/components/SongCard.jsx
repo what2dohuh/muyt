@@ -1,7 +1,8 @@
 import { Loader } from "lucide-react";
 
-export default function SongCard({ song, isCurrent, isLoading, onClick }) {
+export default function SongCard({ song, isCurrent, isLoading, onClick,addToPlaylist }) {
   return (
+    <>
     <div
       onClick={onClick}
       className={`p-4 bg-white/5 hover:bg-white/10 rounded-lg flex gap-4 cursor-pointer transition-all ${
@@ -17,8 +18,13 @@ export default function SongCard({ song, isCurrent, isLoading, onClick }) {
 
       <p className="text-sm text-gray-400">{song.duration}</p>
 
+
       {isLoading && <Loader className="animate-spin text-purple-500" size={20} />}
     </div>
-  );
+    <button onClick={() => addToPlaylist(song)}>
+  ➕ Add
+</button>
+    </>
+);
 }
 

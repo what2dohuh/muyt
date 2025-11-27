@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 
-export const useAudioPlayer = () => {
-  const audioRef = useRef(new Audio());
+export const useAudioPlayer = (playNext) => {
+  const audioRef = useRef(null); // IMPORTANT: start as null (dom element will attach)
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -9,43 +9,50 @@ export const useAudioPlayer = () => {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
-  // Update progress + duration
   useEffect(() => {
     const audio = audioRef.current;
+    if (!audio) return;
 
     const updateTime = () => setCurrentTime(audio.currentTime);
     const updateDuration = () => setDuration(audio.duration);
+    const handleEnded = () => {
+      console.log("Audio ended → calling playNext()");
+      setIsPlaying(false);
+      playNext();
+    };
 
     audio.addEventListener("timeupdate", updateTime);
     audio.addEventListener("loadedmetadata", updateDuration);
+    audio.addEventListener("ended", handleEnded);
 
     return () => {
       audio.removeEventListener("timeupdate", updateTime);
       audio.removeEventListener("loadedmetadata", updateDuration);
+      audio.removeEventListener("ended", handleEnded);
     };
-  }, []);
+  }, [playNext]); // dependency required
 
-  // SEEK FUNCTION
   const seek = (time) => {
+    if (!audioRef.current) return;
     audioRef.current.currentTime = time;
     setCurrentTime(time);
   };
 
-  // VOLUME FUNCTION
   const changeVolume = (v) => {
+    if (!audioRef.current) return;
     audioRef.current.volume = v;
     setVolume(v);
   };
 
   const toggleMute = () => {
-    const audio = audioRef.current;
-    audio.muted = !audio.muted;
-    setIsMuted(audio.muted);
+    if (!audioRef.current) return;
+    audioRef.current.muted = !audioRef.current.muted;
+    setIsMuted(audioRef.current.muted);
   };
 
-  // PLAY / PAUSE
   const togglePlay = () => {
     const audio = audioRef.current;
+    if (!audio) return;
 
     if (audio.paused) {
       audio.play();
