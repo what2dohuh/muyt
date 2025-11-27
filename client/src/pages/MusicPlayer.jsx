@@ -7,7 +7,7 @@ import ErrorBox from "../components/ErrorBox";
 
 import { useAudioPlayer } from "../hooks/useAudioPlayer";
 
-const API_URL = "http://localhost:8080/api";
+const API_URL = "http://35.226.13.70/api";
 
 export default function MusicPlayer() {
   const [searchQuery, setSearchQuery] = useState("");
