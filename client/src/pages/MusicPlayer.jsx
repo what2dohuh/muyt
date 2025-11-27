@@ -7,6 +7,7 @@ import ErrorBox from "../components/ErrorBox";
 
 import { useAudioPlayer } from "../hooks/useAudioPlayer";
 
+import PlaylistEditor from "../components/PlaylsitEditor.jsx"
 const API_URL = "http://35.226.13.70/api";
 
 export default function MusicPlayer() {
@@ -67,6 +68,47 @@ export default function MusicPlayer() {
   }
 };
 
+  // DELETE FROM PLAYLIST
+const deleteFromPlaylist = (index) => {
+  setPlaylist((prev) => prev.filter((_, i) => i !== index));
+
+  // Fix currently playing index system
+  if (index === currentIndex) {
+    setCurrentIndex(null);
+    setCurrentSong(null);
+    audioRef.current.pause();
+  } else if (index < currentIndex) {
+    setCurrentIndex((prev) => prev - 1);
+  }
+};
+
+// MOVE SONG UP
+const moveUp = (index) => {
+  if (index === 0) return;
+  setPlaylist((prev) => {
+    const copy = [...prev];
+    [copy[index - 1], copy[index]] = [copy[index], copy[index - 1]];
+    return copy;
+  });
+
+  if (index === currentIndex) {
+    setCurrentIndex(index - 1);
+  }
+};
+
+// MOVE SONG DOWN
+const moveDown = (index) => {
+  if (index === playlist.length - 1) return;
+  setPlaylist((prev) => {
+    const copy = [...prev];
+    [copy[index], copy[index + 1]] = [copy[index + 1], copy[index]];
+    return copy;
+  });
+
+  if (index === currentIndex) {
+    setCurrentIndex(index + 1);
+  }
+};
   // Initialize audio hook AFTER defining playNext
   const {
     audioRef,
@@ -146,7 +188,14 @@ export default function MusicPlayer() {
         />
 
         {error && <ErrorBox message={error} />}
-
+<PlaylistEditor
+  playlist={playlist}
+  currentIndex={currentIndex}
+  playFromPlaylist={playFromPlaylist}
+  deleteFromPlaylist={deleteFromPlaylist}
+  moveUp={moveUp}
+  moveDown={moveDown}
+/>
         <SearchResults
           results={results}
           currentSong={currentSong}
@@ -154,6 +203,7 @@ export default function MusicPlayer() {
           onSelect={handleSelectSong}
           addToPlaylist={addToPlaylist}
         />
+
 
         {currentSong && (
           <Player
