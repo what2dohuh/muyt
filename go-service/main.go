@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -7,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"time"
 )
@@ -16,189 +16,186 @@ const (
 	serverPort       = ":8080"
 )
 
-// CORS middleware
-func enableCORS(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		next(w, r)
-	}
+// Custom transport for streaming endpoints (NO TIMEOUT)
+var streamingTransport = &http.Transport{
+	MaxIdleConns:        100,
+	IdleConnTimeout:     90 * time.Second,
+	TLSHandshakeTimeout: 10 * time.Second,
+	// No ResponseHeaderTimeout or other timeouts
 }
 
-// Call Python microservice
-func callPythonService(endpoint string) ([]byte, error) {
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Get(pythonServiceURL + endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call Python service: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Python service returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	return body, nil
+// Regular transport for non-streaming endpoints (WITH TIMEOUT)
+var regularTransport = &http.Transport{
+	MaxIdleConns:          100,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ResponseHeaderTimeout: 30 * time.Second,
 }
 
-// Health check endpoint
-func handleHealth(w http.ResponseWriter, r *http.Request) {
-	// Check if Python service is reachable
-	_, err := callPythonService("/health")
+func main() {
+	http.HandleFunc("/health", healthCheck)
+	http.HandleFunc("/api/search", handleSearch)
+	http.HandleFunc("/api/song/", handleSong)
+	http.HandleFunc("/api/stream/", handleStream) // Special handling for streaming
 
+	log.Printf("Go API Gateway running on %s", serverPort)
+	log.Printf("Proxying to Python service at %s", pythonServiceURL)
+	log.Fatal(http.ListenAndServe(serverPort, nil))
+}
+
+func healthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-
-	if err != nil {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":         "unhealthy",
-			"go_server":      "ok",
-			"python_service": "unreachable",
-			"error":          err.Error(),
-		})
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":         "healthy",
-		"go_server":      "ok",
-		"python_service": "ok",
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "healthy",
+		"service": "Go API Gateway",
 	})
 }
 
-// Search YouTube Music
 func handleSearch(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 	if query == "" {
-		http.Error(w, "Missing 'q' query parameter", http.StatusBadRequest)
+		http.Error(w, "Missing query parameter 'q'", http.StatusBadRequest)
 		return
 	}
 
-	limit := r.URL.Query().Get("limit")
-	if limit == "" {
-		limit = "20"
+	// Use regular client with timeout for search
+	client := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: regularTransport,
 	}
 
-	log.Printf("Search request: %s", query)
-
-	// Call Python service
-	endpoint := fmt.Sprintf("/search?q=%s&limit=%s", url.QueryEscape(query), limit)
-	data, err := callPythonService(endpoint)
+	url := fmt.Sprintf("%s/search?q=%s&limit=%s", pythonServiceURL, query, r.URL.Query().Get("limit"))
+	resp, err := client.Get(url)
 	if err != nil {
-		log.Printf("Search error: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("Error calling Python service: %v", err)
+		http.Error(w, "Failed to search", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read Python response
+	var pythonResponse struct {
+		Query   string        `json:"query"`
+		Count   int           `json:"count"`
+		Results []interface{} `json:"results"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&pythonResponse); err != nil {
+		log.Printf("Error decoding response: %v", err)
+		http.Error(w, "Failed to decode response", http.StatusInternalServerError)
 		return
 	}
 
-	// Return JSON response
+	// Wrap for frontend
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(data)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"results": pythonResponse.Results,
+	})
 }
 
-// Get song details
-func handleSongDetails(w http.ResponseWriter, r *http.Request) {
-	// Extract videoId from path: /api/song/{videoId}
+func handleSong(w http.ResponseWriter, r *http.Request) {
+	// Extract video ID from path
 	videoID := r.URL.Path[len("/api/song/"):]
 	if videoID == "" {
 		http.Error(w, "Missing video ID", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("Song details request: %s", videoID)
-
-	// Call Python service
-	endpoint := fmt.Sprintf("/song/%s", videoID)
-	data, err := callPythonService(endpoint)
-	if err != nil {
-		log.Printf("Song details error: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	// Use regular client with timeout for song details
+	client := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: regularTransport,
 	}
 
+	url := fmt.Sprintf("%s/song/%s", pythonServiceURL, videoID)
+	resp, err := client.Get(url)
+	if err != nil {
+		log.Printf("Error calling Python service: %v", err)
+		http.Error(w, "Failed to get song details", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy response
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(data)
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
-// Get stream URL
 func handleStream(w http.ResponseWriter, r *http.Request) {
-	// Extract videoId from path: /api/stream/{videoId}
+	// Extract video ID from path
 	videoID := r.URL.Path[len("/api/stream/"):]
 	if videoID == "" {
 		http.Error(w, "Missing video ID", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("Stream request: %s", videoID)
+	log.Printf("Streaming request for video ID: %s", videoID)
 
-	// Call Python service
-	endpoint := fmt.Sprintf("/stream/%s", videoID)
-	data, err := callPythonService(endpoint)
+	// CRITICAL: Use client WITHOUT timeout for streaming
+	client := &http.Client{
+		Transport: streamingTransport,
+		// NO Timeout set - allow indefinite streaming
+	}
+
+	streamURL := fmt.Sprintf("%s/stream/%s", pythonServiceURL, videoID)
+	
+	// Create request to Python service
+	req, err := http.NewRequest("GET", streamURL, nil)
 	if err != nil {
-		log.Printf("Stream error: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("Error creating request: %v", err)
+		http.Error(w, "Failed to create stream request", http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(data)
-}
-
-// Root endpoint
-func handleRoot(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"service": "YouTube Music API Gateway",
-		"status":  "running",
-		"endpoints": map[string]string{
-			"health":  "GET /health",
-			"search":  "GET /api/search?q={query}&limit={limit}",
-			"song":    "GET /api/song/{videoId}",
-			"stream":  "GET /api/stream/{videoId}",
-		},
-		"examples": map[string]string{
-			"search": "http://localhost:8080/api/search?q=bohemian%20rhapsody",
-			"song":   "http://localhost:8080/api/song/kJQP7kiw5Fk",
-			"stream": "http://localhost:8080/api/stream/kJQP7kiw5Fk",
-		},
-	})
-}
-
-func main() {
-	// Register routes
-	http.HandleFunc("/", enableCORS(handleRoot))
-	http.HandleFunc("/health", enableCORS(handleHealth))
-	http.HandleFunc("/api/search", enableCORS(handleSearch))
-	http.HandleFunc("/api/song/", enableCORS(handleSongDetails))
-	http.HandleFunc("/api/stream/", enableCORS(handleStream))
-
-	// Start server
-	log.Printf("Starting Go API server on port %s", serverPort)
-	log.Printf("Python service URL: %s", pythonServiceURL)
-	log.Printf("Make sure Python service is running on port 5000!")
-	log.Println("\nEndpoints:")
-	log.Println("  - http://localhost:8080/health")
-	log.Println("  - http://localhost:8080/api/search?q=your+query")
-	log.Println("  - http://localhost:8080/api/song/{videoId}")
-	log.Println("  - http://localhost:8080/api/stream/{videoId}")
-
-	if err := http.ListenAndServe(serverPort, nil); err != nil {
-		log.Fatal(err)
+	// Make the request
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Error calling Python service: %v", err)
+		http.Error(w, "Failed to get stream", http.StatusInternalServerError)
+		return
 	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Python service returned status: %d", resp.StatusCode)
+		http.Error(w, "Failed to get stream", resp.StatusCode)
+		return
+	}
+
+	// Set headers for streaming
+	w.Header().Set("Content-Type", "audio/webm")
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Cache-Control", "no-cache")
+	
+	// Copy headers from Python response
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	// Stream the response - copy chunks as they arrive
+	// This will continue until the entire audio file is streamed
+	written, err := io.Copy(w, resp.Body)
+	if err != nil {
+		log.Printf("Error streaming audio (after %d bytes): %v", written, err)
+		return
+	}
+
+	log.Printf("Successfully streamed %d bytes for video ID: %s", written, videoID)
+}
+
+// Alternative: Use reverse proxy for streaming (simpler but less control)
+func handleStreamWithProxy(w http.ResponseWriter, r *http.Request) {
+	target, _ := url.Parse(pythonServiceURL)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	
+	// Customize the transport to disable timeout
+	proxy.Transport = streamingTransport
+	
+	// Modify the request path
+	r.URL.Path = "/stream" + r.URL.Path[len("/api/stream"):]
+	
+	proxy.ServeHTTP(w, r)
 }
