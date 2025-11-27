@@ -64,8 +64,16 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 		Transport: regularTransport,
 	}
 
-	url := fmt.Sprintf("%s/search?q=%s&limit=%s", pythonServiceURL, query, r.URL.Query().Get("limit"))
-	resp, err := client.Get(url)
+	// Build URL with proper query parameters
+	limit := r.URL.Query().Get("limit")
+	if limit == "" {
+		limit = "20" // default
+	}
+	
+	searchURL := fmt.Sprintf("%s/search?q=%s&limit=%s", pythonServiceURL, url.QueryEscape(query), limit)
+	log.Printf("Calling Python service: %s", searchURL)
+	
+	resp, err := client.Get(searchURL)
 	if err != nil {
 		log.Printf("Error calling Python service: %v", err)
 		http.Error(w, "Failed to search", http.StatusInternalServerError)
@@ -73,24 +81,46 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Read Python response
+	// Read the raw response body for debugging
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Error reading response body: %v", err)
+		http.Error(w, "Failed to read response", http.StatusInternalServerError)
+		return
+	}
+
+	// Log the response for debugging
+	log.Printf("Python response status: %d", resp.StatusCode)
+	log.Printf("Python response body: %s", string(body))
+
+	// Check if Python returned an error
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Python service returned error: %d - %s", resp.StatusCode, string(body))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
+		return
+	}
+
+	// Try to decode the response
 	var pythonResponse struct {
 		Query   string        `json:"query"`
 		Count   int           `json:"count"`
 		Results []interface{} `json:"results"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&pythonResponse); err != nil {
-		log.Printf("Error decoding response: %v", err)
-		http.Error(w, "Failed to decode response", http.StatusInternalServerError)
+	if err := json.Unmarshal(body, &pythonResponse); err != nil {
+		log.Printf("Error decoding JSON: %v", err)
+		log.Printf("Raw response was: %s", string(body))
+		http.Error(w, fmt.Sprintf("Failed to decode response: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Wrap for frontend
+	log.Printf("Successfully decoded %d results for query: %s", len(pythonResponse.Results), query)
+
+	// Pass through the Python response as-is (already has correct structure)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"results": pythonResponse.Results,
-	})
+	w.Write(body)
 }
 
 func handleSong(w http.ResponseWriter, r *http.Request) {
