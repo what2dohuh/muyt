@@ -100,26 +100,23 @@ export default function MusicPlayer() {
 
   // PLAY SONG DIRECTLY
   const playSong = async (song) => {
-    setIsLoadingStream(true);
-    setError("");
-    console.log(song)
-    try {
-      const res = await fetch(`${API_URL}/stream/${song.videoId}`);
-      const data = await res.json();
+  setIsLoadingStream(true);
+  setError("");
 
-      if (data.url) {
-        setCurrentSong(song);
-        audioRef.current.src = data.url;
-        audioRef.current.play();
-      }
-    } catch (err) {
-      setError("Failed to load stream: " + err);
-    }
+  try {
+    setCurrentSong(song);
+    // Directly set stream URL
+    audioRef.current.src = `${API_URL}/stream/${song.videoId}`;
+    await audioRef.current.play();
+  } catch (err) {
+    console.error(err);
+    setError("Failed to play stream: " + err);
+  }
 
-    setIsLoadingStream(false);
-  };
+  setIsLoadingStream(false);
+};
 
-    const handleSelectSong = async (song) => {
+  const handleSelectSong = async (song) => {
   // Check if song already exists in playlist
   let index = playlist.findIndex(s => s.videoId === song.videoId);
 
